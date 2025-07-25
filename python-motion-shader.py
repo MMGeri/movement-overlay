@@ -126,7 +126,7 @@ class ScreenCaptureThread(QThread):
                     time.sleep(sleep_time)
 
     def stop(self):
-        self.resume() # Ensure thread is not paused before stopping
+        self.resume()
         self.running = False
         self.wait()
 
@@ -168,6 +168,7 @@ class OverlayWindow(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         
         self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(0,0,0,0) # Ensure no extra margins
         self.label = QLabel()
         self.layout.addWidget(self.label)
         self.setLayout(self.layout)
@@ -175,7 +176,6 @@ class OverlayWindow(QWidget):
     def set_image(self, q_image):
         pixmap = QPixmap.fromImage(q_image)
         self.label.setPixmap(pixmap)
-        self.resize(pixmap.size())
 
 
 class ControlPanel(QWidget):
@@ -228,7 +228,6 @@ class ControlPanel(QWidget):
         hotkey_layout.addWidget(self.apply_hotkey_button)
         layout.addRow(QLabel("Hotkey:"), hotkey_layout)
         
-        # New side-by-side button layout
         button_layout = QHBoxLayout()
         button_layout.addWidget(self.start_button)
         button_layout.addWidget(self.show_button)
@@ -270,8 +269,14 @@ class ControlPanel(QWidget):
         self.capture_thread.update_monitor(monitor_data)
         
         with mss.mss() as sct:
+            # *** FIX: Set window geometry explicitly to match the monitor ***
             monitor_geom = sct.monitors[monitor_data]
-            self.overlay_window.move(monitor_geom["left"], monitor_geom["top"])
+            self.overlay_window.setGeometry(
+                monitor_geom["left"], 
+                monitor_geom["top"], 
+                monitor_geom["width"], 
+                monitor_geom["height"]
+            )
             
         self.capture_thread.start()
         self.update_hotkey() 

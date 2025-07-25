@@ -3,3 +3,4 @@ mss
 numpy
 PyQt6
 pynput
+pygetwindow 
