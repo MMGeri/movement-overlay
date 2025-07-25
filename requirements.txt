@@ -1,0 +1,5 @@
+opencv-python
+mss
+numpy
+PyQt6
+pynput
