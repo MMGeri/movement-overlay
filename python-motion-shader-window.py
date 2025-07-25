@@ -48,8 +48,6 @@ class HotkeyListenerThread(QThread):
 
 class ScreenCaptureThread(QThread):
     new_frame = pyqtSignal(QImage)
-    request_hide = pyqtSignal()
-    request_show = pyqtSignal()
     window_geometry_changed = pyqtSignal(int, int, int, int)
 
     def __init__(self, parent=None):
@@ -63,6 +61,9 @@ class ScreenCaptureThread(QThread):
     def run(self):
         self.running = True
         frame_history = deque(maxlen=self._history_length)
+        # Kernel for the morphological filter to remove noise
+        morph_kernel = np.ones((3, 3), np.uint8)
+
         with mss.mss() as sct:
             while self.running:
                 with QMutexLocker(self.mutex):
@@ -82,25 +83,44 @@ class ScreenCaptureThread(QThread):
                     if current_geom != self.last_geom:
                         self.window_geometry_changed.emit(*current_geom)
                         self.last_geom = current_geom
+                        # *** FIX: Clear history when window size changes to prevent crash ***
+                        frame_history.clear()
 
+                    # The overlay is NOT hidden. The capture will include it.
                     capture_area = {'top': win.top, 'left': win.left, 'width': win.width, 'height': win.height}
-                    self.request_hide.emit(); time.sleep(0.001)
                     sct_img = sct.grab(capture_area)
-                    self.request_show.emit()
                     frame = np.array(sct_img)
                 except Exception as e:
-                    print(f"Capture error: {e}"); self.request_show.emit(); continue
+                    print(f"Capture error: {e}"); continue
 
                 if frame_history.maxlen != history_length:
                     frame_history = deque(list(frame_history), maxlen=history_length)
                 
                 gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2GRAY)
-                motion_output = np.zeros_like(gray_frame)
+                
+                # Use a floating point accumulator for weighted differences
+                motion_output_float = np.zeros_like(gray_frame, dtype=np.float32)
+
                 if len(frame_history) > 0:
-                    for old_frame in frame_history:
+                    history_len = len(frame_history)
+                    for i, old_frame in enumerate(frame_history):
+                        # Calculate difference
                         diff = cv2.absdiff(gray_frame, old_frame)
-                        _, mask = cv2.threshold(diff, sensitivity, 255, cv2.THRESH_BINARY)
-                        motion_output = cv2.bitwise_or(motion_output, mask)
+                        
+                        # Calculate decay factor. Frames are ordered oldest to newest.
+                        # This gives newer frames (higher 'i') a greater weight.
+                        weight = (i + 1.0) / history_len
+                        
+                        # Add the weighted difference to the accumulator
+                        motion_output_float += diff.astype(np.float32) * weight
+                
+                # Convert the accumulated float image back to an 8-bit image
+                motion_output = np.clip(motion_output_float, 0, 255).astype(np.uint8)
+                
+                # Apply the sensitivity threshold and noise removal
+                _, motion_output = cv2.threshold(motion_output, sensitivity, 255, cv2.THRESH_BINARY)
+                motion_output = cv2.morphologyEx(motion_output, cv2.MORPH_OPEN, morph_kernel)
+                
                 frame_history.append(gray_frame)
                 
                 h, w = motion_output.shape
@@ -156,8 +176,8 @@ class ControlPanel(QWidget):
         self.sensitivity_label = QLabel()
         self.hotkey_input = QLineEdit("<ctrl>+<alt>+h")
         self.apply_hotkey_button = QPushButton("Apply Hotkey")
-        self.start_button, self.show_button, self.hide_button = QPushButton("Start"), QPushButton("Show"), QPushButton("Hide")
-        self.show_button.setEnabled(False); self.hide_button.setEnabled(False)
+        self.show_button, self.hide_button = QPushButton("Show Overlay"), QPushButton("Hide Overlay")
+        self.hide_button.setEnabled(False) # Start with Hide disabled
 
         # --- Layout ---
         layout = QFormLayout(self); window_layout = QHBoxLayout()
@@ -167,12 +187,11 @@ class ControlPanel(QWidget):
         layout.addRow(self.sensitivity_label, self.sensitivity_slider); hotkey_layout = QVBoxLayout()
         hotkey_layout.addWidget(self.hotkey_input); hotkey_layout.addWidget(self.apply_hotkey_button)
         layout.addRow(QLabel("Hotkey:"), hotkey_layout); button_layout = QHBoxLayout()
-        button_layout.addWidget(self.start_button); button_layout.addWidget(self.show_button); button_layout.addWidget(self.hide_button)
+        button_layout.addWidget(self.show_button); button_layout.addWidget(self.hide_button)
         layout.addRow(button_layout); self.setLayout(layout)
 
         # --- Connections ---
         self.refresh_button.clicked.connect(self.populate_windows)
-        self.start_button.clicked.connect(self.start_capture)
         self.show_button.clicked.connect(self.show_overlay)
         self.hide_button.clicked.connect(self.hide_overlay)
         self.apply_hotkey_button.clicked.connect(self.update_hotkey)
@@ -180,8 +199,6 @@ class ControlPanel(QWidget):
         self.history_slider.valueChanged.connect(self.on_history_change)
         self.sensitivity_slider.valueChanged.connect(self.on_sensitivity_change)
         self.capture_thread.new_frame.connect(self.overlay_window.set_image)
-        self.capture_thread.request_hide.connect(self.overlay_window.hide)
-        self.capture_thread.request_show.connect(self.overlay_window.show)
         self.capture_thread.window_geometry_changed.connect(self.overlay_window.setGeometry)
         
         self.populate_windows(); self.on_fps_change(); self.on_history_change(); self.on_sensitivity_change()
@@ -191,24 +208,39 @@ class ControlPanel(QWidget):
         for win in gw.getAllWindows():
             if win.title: self.window_combo.addItem(win.title)
 
-    def start_capture(self):
-        win_title = self.window_combo.currentText()
-        if not win_title: QMessageBox.critical(self, "Error", "No window selected."); return
-        self.capture_thread.update_window(win_title)
-        self.capture_thread.start(); self.update_hotkey()
-        self.start_button.setEnabled(False); self.show_button.setEnabled(True); self.hide_button.setEnabled(True)
-        self.show_overlay()
-
     def stop_capture(self):
         self.capture_thread.stop()
         if self.hotkey_thread: self.hotkey_thread.stop()
         self.overlay_window.hide()
 
-    def show_overlay(self): self.capture_thread.resume()
-    def hide_overlay(self): self.capture_thread.pause()
+    def show_overlay(self):
+        # Always get the currently selected window title
+        win_title = self.window_combo.currentText()
+        if not win_title: 
+            QMessageBox.critical(self, "Error", "No window selected."); return
+        self.capture_thread.update_window(win_title)
+
+        # If the thread isn't running, this is the first time clicking "Show"
+        if not self.capture_thread.isRunning():
+            self.capture_thread.start()
+            self.update_hotkey()
+
+        self.overlay_window.show()
+        self.capture_thread.resume()
+        self.show_button.setEnabled(False)
+        self.hide_button.setEnabled(True)
+
+    def hide_overlay(self):
+        self.overlay_window.hide()
+        self.capture_thread.pause()
+        self.show_button.setEnabled(True)
+        self.hide_button.setEnabled(False)
+        
     def toggle_overlay_visibility(self):
-        if not self.capture_thread.paused: self.hide_overlay()
-        else: self.show_overlay()
+        if self.overlay_window.isVisible():
+            self.hide_overlay()
+        else:
+            self.show_overlay()
 
     def update_hotkey(self):
         if not self.capture_thread.isRunning(): return
