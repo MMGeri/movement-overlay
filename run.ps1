@@ -4,7 +4,7 @@
 # IMPORTANT: Make sure you have saved the Python code from the chat
 # into a file named 'python-motion-shader.py' in the same directory as this script.
 
-$python_script_name = "python-motion-shader-window.py"
+$python_script_name = "python-motion-shader.py"
 $venv_name = "venv"
 
 # Check if the virtual environment exists
