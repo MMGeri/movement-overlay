@@ -9,6 +9,11 @@ A Windows screen overlay that highlights motion. It captures a monitor, compares
 - Global hotkey to show/hide the output window (default `Ctrl+Alt+H`, configurable in the UI)
 - Debug mode that shows the raw captured frame
 
+## Screenshots
+
+![Motion display example 1](docs/images/motion-display-example-1.png)
+![Motion display example 2](docs/images/motion-display-example-2.png)
+
 ## Requirements
 
 - Windows with Python 3
